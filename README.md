@@ -1,7 +1,7 @@
 # Visitor Lite Logger
 
 **Geliştirici:** Maya Hukuk  
-**Sürüm:** 3.0.0
+**Sürüm:** 3.1.0
 
 ## Açıklama
 Visitor Lite Logger, WordPress siteleri için hafif ve asenkron çalışan bir ziyaretçi kayıt eklentisidir. Amaç, harici servis kullanmadan temel ziyaret bilgisini veritabanına güvenli ve performans dostu şekilde kaydetmektir.
@@ -10,6 +10,7 @@ Visitor Lite Logger, WordPress siteleri için hafif ve asenkron çalışan bir z
 - Tek dosyalı eklenti yapısı (`visitor-lite-logger.php`)
 - CSP uyumlu frontend akışı: JS kodu REST endpoint üzerinden (`/wp-json/visitor-lite-logger/v1/script.js`) harici script olarak sunulur
 - `sendBeacon` önceliği, destek yoksa `fetch + keepalive` fallback
+- Sayfada kalma süresi ölçümü (milisaniye)
 - Sadece giriş yapmamış ziyaretçiler için çalışma
 - Bot/crawler filtreleme (case-insensitive)
 - Nonce doğrulamalı REST endpoint
@@ -24,6 +25,7 @@ Visitor Lite Logger, WordPress siteleri için hafif ve asenkron çalışan bir z
   - Sıralama (Tarih, IP, URL)
   - Arama (IP, URL, User-Agent)
   - Tarih aralığı filtreleme (Başlangıç/Bitiş)
+  - Sayfada kalma süresi kolonu
 - CSV dışa aktarma (büyük veri için chunking ile bellek dostu)
 - Günlük cron ile eski kayıt temizliği
 

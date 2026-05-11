@@ -1,9 +1,9 @@
 <?php
 /**
  * Plugin Name: Visitor Lite Logger
- * Plugin URI: https://example.com
+ * Plugin URI: https://bursa.mayahukuk.com
  * Description: Hafif ve asenkron ziyaret kaydı tutan WordPress eklentisi.
- * Version: 3.0.0
+ * Version: 3.1.0
  * Author: Maya Hukuk
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -13,7 +13,7 @@
 defined( 'ABSPATH' ) || exit;
 
 if ( ! defined( 'VLL_VERSION' ) ) {
-	define( 'VLL_VERSION', '3.0.0' );
+	define( 'VLL_VERSION', '3.1.0' );
 }
 
 if ( ! defined( 'VLL_REST_NAMESPACE' ) ) {
@@ -34,6 +34,10 @@ if ( ! defined( 'VLL_CLEANUP_HOOK' ) ) {
 
 if ( ! defined( 'VLL_EXPORT_ACTION' ) ) {
 	define( 'VLL_EXPORT_ACTION', 'vll_export_csv' );
+}
+
+if ( ! defined( 'VLL_CLEAR_ACTION' ) ) {
+	define( 'VLL_CLEAR_ACTION', 'vll_clear_logs' );
 }
 
 if ( ! defined( 'VLL_THROTTLE_SECONDS' ) ) {
@@ -76,9 +80,15 @@ if ( ! defined( 'VLL_SETTINGS_PAGE' ) ) {
 	define( 'VLL_SETTINGS_PAGE', 'vll-settings' );
 }
 
+if ( ! defined( 'VLL_SCHEMA_OPTION' ) ) {
+	define( 'VLL_SCHEMA_OPTION', 'vll_schema_version' );
+}
+
 register_activation_hook( __FILE__, 'vll_activate' );
 register_deactivation_hook( __FILE__, 'vll_deactivate' );
 register_uninstall_hook( __FILE__, 'vll_uninstall' );
+
+add_action( 'plugins_loaded', 'vll_maybe_upgrade_schema' );
 
 add_action( 'rest_api_init', 'vll_register_rest_routes' );
 add_filter( 'rest_pre_serve_request', 'vll_rest_pre_serve_script', 20, 4 );
@@ -88,6 +98,7 @@ add_action( 'wp_enqueue_scripts', 'vll_enqueue_frontend_logger', 99 );
 add_action( 'admin_menu', 'vll_register_admin_menu' );
 add_action( 'admin_init', 'vll_register_settings' );
 add_action( 'admin_post_' . VLL_EXPORT_ACTION, 'vll_handle_csv_export' );
+add_action( 'admin_post_' . VLL_CLEAR_ACTION, 'vll_handle_clear_logs' );
 
 add_action( VLL_CLEANUP_HOOK, 'vll_cleanup_old_logs' );
 
@@ -120,12 +131,13 @@ if ( is_admin() && ! class_exists( 'VLL_Log_List_Table' ) ) {
 		 */
 		public function get_columns() {
 			return array(
-				'visit_time'  => __( 'Tarih', 'visitor-lite-logger' ),
-				'visitor_ip'  => __( 'IP', 'visitor-lite-logger' ),
-				'visited_url' => __( 'Ziyaret Edilen URL', 'visitor-lite-logger' ),
-				'page_title'  => __( 'Sayfa Başlığı', 'visitor-lite-logger' ),
-				'referrer'    => __( 'Referrer', 'visitor-lite-logger' ),
-				'user_agent'  => __( 'User-Agent', 'visitor-lite-logger' ),
+				'visit_time'      => __( 'Tarih', 'visitor-lite-logger' ),
+				'visitor_ip'      => __( 'IP', 'visitor-lite-logger' ),
+				'visited_url'     => __( 'Ziyaret Edilen URL', 'visitor-lite-logger' ),
+				'page_title'      => __( 'Sayfa Başlığı', 'visitor-lite-logger' ),
+				'referrer'        => __( 'Referrer', 'visitor-lite-logger' ),
+				'time_on_page_ms' => __( 'Sayfada Kalma', 'visitor-lite-logger' ),
+				'user_agent'      => __( 'User-Agent', 'visitor-lite-logger' ),
 			);
 		}
 
@@ -255,6 +267,17 @@ if ( is_admin() && ! class_exists( 'VLL_Log_List_Table' ) ) {
 		}
 
 		/**
+		 * Renders time_on_page_ms column.
+		 *
+		 * @param array $item Row.
+		 * @return string
+		 */
+		protected function column_time_on_page_ms( $item ) {
+			$duration_ms = isset( $item['time_on_page_ms'] ) ? absint( $item['time_on_page_ms'] ) : 0;
+			return esc_html( vll_format_duration_ms( $duration_ms ) );
+		}
+
+		/**
 		 * Renders user_agent column.
 		 *
 		 * @param array $item Row.
@@ -322,7 +345,7 @@ if ( is_admin() && ! class_exists( 'VLL_Log_List_Table' ) ) {
 
 			$total_items = (int) $wpdb->get_var( $count_sql );
 
-			$query_sql = "SELECT id, visitor_ip, visited_url, user_agent, referrer, page_title, visit_time
+			$query_sql = "SELECT id, visitor_ip, visited_url, user_agent, referrer, page_title, time_on_page_ms, visit_time
 				FROM {$table_name}
 				{$where_data['sql']}
 				ORDER BY {$orderby} {$order}
@@ -421,6 +444,21 @@ function vll_get_setting( $key, $fallback = null ) {
 }
 
 /**
+ * Upgrades schema when plugin version changes.
+ *
+ * @return void
+ */
+function vll_maybe_upgrade_schema() {
+	$stored_version = get_option( VLL_SCHEMA_OPTION, '' );
+	if ( VLL_VERSION === $stored_version ) {
+		return;
+	}
+
+	vll_create_logs_table();
+	update_option( VLL_SCHEMA_OPTION, VLL_VERSION, false );
+}
+
+/**
  * Plugin activation callback.
  *
  * @return void
@@ -428,6 +466,7 @@ function vll_get_setting( $key, $fallback = null ) {
 function vll_activate() {
 	vll_create_logs_table();
 	vll_schedule_cleanup_event();
+	update_option( VLL_SCHEMA_OPTION, VLL_VERSION, false );
 
 	$existing_settings = get_option( VLL_SETTINGS_OPTION, null );
 	if ( null === $existing_settings ) {
@@ -484,6 +523,7 @@ function vll_create_logs_table() {
 		user_agent TEXT NULL,
 		referrer TEXT NULL,
 		page_title TEXT NULL,
+		time_on_page_ms INT UNSIGNED NOT NULL DEFAULT 0,
 		visit_time DATETIME NOT NULL,
 		PRIMARY KEY (id),
 		KEY visit_time (visit_time),
@@ -544,22 +584,27 @@ function vll_register_rest_routes() {
 			'callback'            => 'vll_rest_log_visit',
 			'permission_callback' => '__return_true',
 			'args'                => array(
-				'visited_url' => array(
+				'visited_url'     => array(
 					'type'              => 'string',
 					'required'          => false,
 					'sanitize_callback' => 'esc_url_raw',
 				),
-				'page_title'  => array(
+				'page_title'      => array(
 					'type'              => 'string',
 					'required'          => false,
 					'sanitize_callback' => 'sanitize_text_field',
 				),
-				'referrer'    => array(
+				'referrer'        => array(
 					'type'              => 'string',
 					'required'          => false,
 					'sanitize_callback' => 'sanitize_text_field',
 				),
-				'nonce'       => array(
+				'time_on_page_ms' => array(
+					'type'              => 'integer',
+					'required'          => false,
+					'sanitize_callback' => 'absint',
+				),
+				'nonce'           => array(
 					'type'              => 'string',
 					'required'          => true,
 					'sanitize_callback' => 'sanitize_text_field',
@@ -611,11 +656,13 @@ function vll_rest_log_visit( WP_REST_Request $request ) {
 		return new WP_REST_Response( array( 'ok' => true ), 200 );
 	}
 
-	$referrer   = sanitize_text_field( (string) $request->get_param( 'referrer' ) );
-	$page_title = sanitize_text_field( (string) $request->get_param( 'page_title' ) );
+	$referrer        = sanitize_text_field( (string) $request->get_param( 'referrer' ) );
+	$page_title      = sanitize_text_field( (string) $request->get_param( 'page_title' ) );
+	$time_on_page_ms = absint( $request->get_param( 'time_on_page_ms' ) );
 
-	$referrer   = vll_truncate_text( $referrer, VLL_MAX_REFERRER_LENGTH );
-	$page_title = vll_truncate_text( $page_title, VLL_MAX_TITLE_LENGTH );
+	$referrer        = vll_truncate_text( $referrer, VLL_MAX_REFERRER_LENGTH );
+	$page_title      = vll_truncate_text( $page_title, VLL_MAX_TITLE_LENGTH );
+	$time_on_page_ms = min( $time_on_page_ms, DAY_IN_SECONDS * 1000 );
 
 	$visitor_ip = vll_get_client_ip();
 	if ( '' === $visitor_ip ) {
@@ -645,7 +692,8 @@ function vll_rest_log_visit( WP_REST_Request $request ) {
 			'user_agent'  => vll_truncate_text( $user_agent, VLL_MAX_UA_LENGTH ),
 			'referrer'    => $referrer,
 			'page_title'  => $page_title,
-			'visit_time'  => current_time( 'mysql' ),
+			'time_on_page_ms' => $time_on_page_ms,
+			'visit_time'       => current_time( 'mysql' ),
 		),
 		array(
 			'%s',
@@ -653,6 +701,7 @@ function vll_rest_log_visit( WP_REST_Request $request ) {
 			'%s',
 			'%s',
 			'%s',
+			'%d',
 			'%s',
 		)
 	);
@@ -745,23 +794,32 @@ function vll_get_dynamic_frontend_script() {
 
 	return "(function () {\n"
 		. "\t'use strict';\n\n"
-		. "\tfunction vllSchedule(fn) {\n"
-		. "\t\tif ('requestIdleCallback' in window) {\n"
-		. "\t\t\twindow.requestIdleCallback(fn, { timeout: 1500 });\n"
-		. "\t\t\treturn;\n"
+		. "\tvar cfg = " . $config_json . ";\n"
+		. "\tvar sent = false;\n"
+		. "\tvar startedAt = (window.performance && performance.timeOrigin) ? performance.timeOrigin : Date.now();\n\n"
+		. "\tif (!cfg.endpoint || !cfg.nonce) {\n"
+		. "\t\treturn;\n"
+		. "\t}\n\n"
+		. "\tfunction vllGetDurationMs() {\n"
+		. "\t\tvar duration = Date.now() - startedAt;\n"
+		. "\t\tif (!isFinite(duration) || duration < 0) {\n"
+		. "\t\t\treturn 0;\n"
 		. "\t\t}\n"
-		. "\t\twindow.setTimeout(fn, 150);\n"
+		. "\t\tif (duration > 86400000) {\n"
+		. "\t\t\treturn 86400000;\n"
+		. "\t\t}\n"
+		. "\t\treturn Math.round(duration);\n"
 		. "\t}\n\n"
 		. "\tfunction vllSendLog() {\n"
+		. "\t\tif (sent) {\n"
+		. "\t\t\treturn;\n"
+		. "\t\t}\n"
 		. "\t\ttry {\n"
-		. "\t\t\tvar cfg = " . $config_json . ";\n"
-		. "\t\t\tif (!cfg.endpoint || !cfg.nonce) {\n"
-		. "\t\t\t\treturn;\n"
-		. "\t\t\t}\n\n"
 		. "\t\t\tvar payload = {\n"
 		. "\t\t\t\tvisited_url: window.location.href || '',\n"
 		. "\t\t\t\tpage_title: document.title || '',\n"
 		. "\t\t\t\treferrer: document.referrer || '',\n"
+		. "\t\t\t\ttime_on_page_ms: vllGetDurationMs(),\n"
 		. "\t\t\t\tnonce: cfg.nonce\n"
 		. "\t\t\t};\n"
 		. "\t\t\tvar body = JSON.stringify(payload);\n\n"
@@ -769,10 +827,12 @@ function vll_get_dynamic_frontend_script() {
 		. "\t\t\t\tvar blob = new Blob([body], { type: 'application/json; charset=UTF-8' });\n"
 		. "\t\t\t\tvar queued = navigator.sendBeacon(cfg.endpoint, blob);\n"
 		. "\t\t\t\tif (queued) {\n"
+		. "\t\t\t\t\tsent = true;\n"
 		. "\t\t\t\t\treturn;\n"
 		. "\t\t\t\t}\n"
 		. "\t\t\t}\n\n"
 		. "\t\t\tif (window.fetch) {\n"
+		. "\t\t\t\tsent = true;\n"
 		. "\t\t\t\twindow.fetch(cfg.endpoint, {\n"
 		. "\t\t\t\t\tmethod: 'POST',\n"
 		. "\t\t\t\t\tcredentials: 'same-origin',\n"
@@ -781,18 +841,19 @@ function vll_get_dynamic_frontend_script() {
 		. "\t\t\t\t\t\t'Content-Type': 'application/json'\n"
 		. "\t\t\t\t\t},\n"
 		. "\t\t\t\t\tbody: body\n"
-		. "\t\t\t\t}).catch(function () {});\n"
+		. "\t\t\t\t}).catch(function () {\n"
+		. "\t\t\t\t\tsent = false;\n"
+		. "\t\t\t\t});\n"
 		. "\t\t\t}\n"
 		. "\t\t} catch (e) {}\n"
 		. "\t}\n\n"
-		. "\tfunction vllInit() {\n"
-		. "\t\tvllSchedule(vllSendLog);\n"
+		. "\tfunction vllOnVisibilityChange() {\n"
+		. "\t\tif (document.visibilityState === 'hidden') {\n"
+		. "\t\t\tvllSendLog();\n"
+		. "\t\t}\n"
 		. "\t}\n\n"
-		. "\tif (document.readyState === 'complete') {\n"
-		. "\t\tvllInit();\n"
-		. "\t\treturn;\n"
-		. "\t}\n\n"
-		. "\twindow.addEventListener('load', vllInit, { once: true });\n"
+		. "\tdocument.addEventListener('visibilitychange', vllOnVisibilityChange);\n"
+		. "\twindow.addEventListener('pagehide', vllSendLog);\n"
 		. "}());\n";
 }
 
@@ -1356,11 +1417,29 @@ function vll_render_admin_page() {
 		VLL_EXPORT_ACTION,
 		'vll_export_nonce'
 	);
+	$clear_url = wp_nonce_url(
+		add_query_arg(
+			array(
+				'action' => VLL_CLEAR_ACTION,
+			),
+			admin_url( 'admin-post.php' )
+		),
+		VLL_CLEAR_ACTION,
+		'vll_clear_nonce'
+	);
+	$clear_confirm = esc_attr__( 'Tüm ziyaret kayıtları silinecek. Devam etmek istiyor musunuz?', 'visitor-lite-logger' );
+	$notice        = isset( $_GET['vll_notice'] ) ? sanitize_key( wp_unslash( $_GET['vll_notice'] ) ) : '';
 
 	echo '<div class="wrap">';
 	echo '<h1 class="wp-heading-inline"><span class="dashicons dashicons-chart-bar" style="margin-top:6px;margin-right:6px;" aria-hidden="true"></span>' . esc_html__( 'Ziyaretçi Kayıtları', 'visitor-lite-logger' ) . '</h1>';
 	echo '<a href="' . esc_url( $export_url ) . '" class="page-title-action"><span class="dashicons dashicons-download" style="margin-top:3px;margin-right:4px;" aria-hidden="true"></span>' . esc_html__( 'CSV Olarak İndir', 'visitor-lite-logger' ) . '</a>';
+	echo '<a href="' . esc_url( $clear_url ) . '" class="page-title-action" style="color:#b32d2e;" onclick="return confirm(\'' . $clear_confirm . '\');"><span class="dashicons dashicons-trash" style="margin-top:3px;margin-right:4px;" aria-hidden="true"></span>' . esc_html__( 'Kayıtları Sıfırla', 'visitor-lite-logger' ) . '</a>';
 	echo '<hr class="wp-header-end" />';
+	if ( 'logs_cleared' === $notice ) {
+		echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Tüm ziyaret kayıtları temizlendi.', 'visitor-lite-logger' ) . '</p></div>';
+	} elseif ( 'logs_clear_failed' === $notice ) {
+		echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'Kayıtlar temizlenirken bir hata oluştu.', 'visitor-lite-logger' ) . '</p></div>';
+	}
 
 	echo '<style>
 	.vll-summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:14px 0 16px;}
@@ -1393,6 +1472,42 @@ function vll_render_admin_page() {
 	$list_table->display();
 	echo '</form>';
 	echo '</div>';
+}
+
+/**
+ * Handles clear all logs request.
+ *
+ * @return void
+ */
+function vll_handle_clear_logs() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( esc_html__( 'Bu işlem için yetkiniz yok.', 'visitor-lite-logger' ) );
+	}
+
+	$nonce = isset( $_GET['vll_clear_nonce'] ) ? sanitize_text_field( wp_unslash( $_GET['vll_clear_nonce'] ) ) : '';
+	if ( empty( $nonce ) || ! wp_verify_nonce( $nonce, VLL_CLEAR_ACTION ) ) {
+		wp_die( esc_html__( 'Geçersiz istek.', 'visitor-lite-logger' ) );
+	}
+
+	global $wpdb;
+	$table_name = vll_get_table_name();
+
+	$result = $wpdb->query( "TRUNCATE TABLE {$table_name}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	if ( false === $result ) {
+		$result = $wpdb->query( "DELETE FROM {$table_name}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	}
+
+	$notice       = ( false === $result ) ? 'logs_clear_failed' : 'logs_cleared';
+	$redirect_url = add_query_arg(
+		array(
+			'page'       => 'vll-visitor-logs',
+			'vll_notice' => $notice,
+		),
+		admin_url( 'tools.php' )
+	);
+
+	wp_safe_redirect( $redirect_url );
+	exit;
 }
 
 /**
@@ -1447,6 +1562,7 @@ function vll_handle_csv_export() {
 			'Ziyaret Edilen URL',
 			'Sayfa Başlığı',
 			'Referrer',
+			'Sayfada Kalma (ms)',
 			'User-Agent',
 		)
 	);
@@ -1454,7 +1570,7 @@ function vll_handle_csv_export() {
 	@set_time_limit( 0 );
 
 	while ( true ) {
-		$sql = "SELECT visit_time, visitor_ip, visited_url, page_title, referrer, user_agent
+		$sql = "SELECT visit_time, visitor_ip, visited_url, page_title, referrer, time_on_page_ms, user_agent
 			FROM {$table_name}
 			{$where_data['sql']}
 			ORDER BY visit_time DESC
@@ -1483,6 +1599,7 @@ function vll_handle_csv_export() {
 					isset( $row['visited_url'] ) ? (string) $row['visited_url'] : '',
 					isset( $row['page_title'] ) ? (string) $row['page_title'] : '',
 					isset( $row['referrer'] ) ? (string) $row['referrer'] : '',
+					isset( $row['time_on_page_ms'] ) ? (string) absint( $row['time_on_page_ms'] ) : '0',
 					isset( $row['user_agent'] ) ? (string) $row['user_agent'] : '',
 				)
 			);
@@ -1636,4 +1753,47 @@ function vll_truncate_text( $text, $max_length ) {
 	}
 
 	return substr( $text, 0, $max_length );
+}
+
+/**
+ * Formats milliseconds into a readable duration.
+ *
+ * @param int $duration_ms Duration in milliseconds.
+ * @return string
+ */
+function vll_format_duration_ms( $duration_ms ) {
+	$duration_ms = absint( $duration_ms );
+	if ( $duration_ms < 1000 ) {
+		return __( '< 1 sn', 'visitor-lite-logger' );
+	}
+
+	$seconds = (int) floor( $duration_ms / 1000 );
+	$hours   = (int) floor( $seconds / HOUR_IN_SECONDS );
+	$minutes = (int) floor( ( $seconds % HOUR_IN_SECONDS ) / MINUTE_IN_SECONDS );
+	$secs    = (int) ( $seconds % MINUTE_IN_SECONDS );
+
+	if ( $hours > 0 ) {
+		return sprintf(
+			/* translators: 1: hours, 2: minutes, 3: seconds */
+			__( '%1$s sa %2$s dk %3$s sn', 'visitor-lite-logger' ),
+			number_format_i18n( $hours ),
+			number_format_i18n( $minutes ),
+			number_format_i18n( $secs )
+		);
+	}
+
+	if ( $minutes > 0 ) {
+		return sprintf(
+			/* translators: 1: minutes, 2: seconds */
+			__( '%1$s dk %2$s sn', 'visitor-lite-logger' ),
+			number_format_i18n( $minutes ),
+			number_format_i18n( $secs )
+		);
+	}
+
+	return sprintf(
+		/* translators: %s: seconds */
+		__( '%s sn', 'visitor-lite-logger' ),
+		number_format_i18n( $secs )
+	);
 }
